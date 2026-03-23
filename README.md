@@ -4,7 +4,8 @@ Soroban smart contracts for the TalentTrust decentralized freelancer escrow prot
 
 ## What's in this repo
 
-- **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments and reputation credential issuance.
+- **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments, reputation credential issuance, and structured contract error codes.
+- **Escrow docs** (`docs/escrow`): Escrow architecture notes, error taxonomy, and security assumptions.
 
 ## Prerequisites
 
@@ -31,6 +32,10 @@ cargo fmt --all -- --check
 # Format code
 cargo fmt --all
 ```
+
+## Escrow Error Taxonomy
+
+The escrow contract uses `Result<T, EscrowError>` for operational methods. This replaces ambiguous boolean-only success/failure signaling with explicit error codes that are easier to review, test, and monitor.
 
 ## Contributing
 
