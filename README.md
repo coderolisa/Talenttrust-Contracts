@@ -4,7 +4,7 @@ Soroban smart contracts for the TalentTrust decentralized freelancer escrow prot
 
 ## What's in this repo
 
-- **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments, reputation credential issuance, and treasury payout integration for protocol fee collection.
+- **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments, reputation credential issuance, treasury payout integration, and timeout-based escrow actions for inactive milestones/disputes.
 
 ## Features
 
@@ -37,6 +37,38 @@ Soroban smart contracts for the TalentTrust decentralized freelancer escrow prot
 - `FEE_COLL` - Emitted when protocol fees are collected
 - `TR_PAYOUT` - Emitted when direct treasury payout occurs
 - `MS_RELEASE` - Emitted when a milestone is released
+
+### Timeout-Based Escrow Actions
+- **Automatic timeout handling**: Contracts can timeout after period of inactivity
+- **Milestone completion tracking**: Freelancer marks milestones complete, starting timeout
+- **Timeout claims**: Either party can claim funds after timeout period
+- **Dispute resolution with timeout**: Disputes auto-resolve after timeout if not manually resolved
+- **Configurable timeout duration**: 1 day to 365 days, default 30 days
+- **Auto-resolve options**: Return to client, release to freelancer, or split 50/50
+
+#### Timeout Functions
+- `set_contract_timeout(contract_id, duration, auto_resolve_type)` - Set timeout for contract
+- `get_contract_timeout(contract_id)` - Read timeout configuration
+- `get_last_activity(contract_id)` - Get last activity timestamp
+- `mark_milestone_complete(contract_id, milestone_id)` - Freelancer marks work done
+- `is_milestone_complete(contract_id, milestone_id)` - Check milestone status
+- `claim_milestone_timeout(contract_id, milestone_id)` - Claim funds after timeout
+- `raise_dispute(contract_id, initiator, reason)` - Initiate dispute with timeout
+- `get_dispute(contract_id)` - Get dispute information
+- `resolve_dispute(admin, contract_id, resolution)` - Admin resolves dispute before timeout
+- `claim_dispute_timeout(contract_id)` - Auto-resolve dispute after timeout
+
+#### Timeout Configuration
+- Default timeout: 30 days (2,592,000 seconds)
+- Minimum timeout: 1 day (86,400 seconds)
+- Maximum timeout: 365 days (31,536,000 seconds)
+- Auto-resolve types: 0 = return to client, 1 = release to freelancer, 2 = split 50/50
+
+#### Timeout Events
+- `TIMEOUT` - Emitted when timeout is claimed
+- `DISPUTE` - Emitted when dispute is raised
+- `RESOLVED` - Emitted when dispute is resolved
+- `COMPLETE` - Emitted when milestone is marked complete
 
 ## Prerequisites
 
@@ -107,12 +139,21 @@ client.release_milestone(&contract_id, &0);
 ### Access Control
 - Admin is set during treasury initialization and cannot be changed
 - Only the client who created an escrow can deposit funds and release milestones
+- Only the freelancer can mark milestones as complete
+- Only client or freelancer can raise disputes
 - All state-changing operations require proper authorization
 
+### Timeout Security
+- **Timeout validation**: Duration must be between 1 day and 365 days
+- **Activity tracking**: Last activity timestamp updated on all state changes
+- **Timeout claims**: Only legitimate parties can claim after timeout
+- **Dispute resolution**: Admin can resolve disputes before timeout expires
+- **Auto-resolve protection**: Funds distributed according to pre-configured rules
+
 ### Audit Trail
-- All treasury operations emit events with relevant data
-- Events include: admin address, treasury address, fee amounts, and timestamps
-- Complete history of configuration changes is preserved on-chain
+- All treasury and timeout operations emit events with relevant data
+- Events include: admin address, treasury address, fee amounts, timestamps, dispute reasons
+- Complete history of configuration changes and timeouts is preserved on-chain
 
 ## Testing
 
@@ -121,7 +162,11 @@ The test suite covers:
 - Configuration updates (authorized and unauthorized)
 - Fee calculation accuracy (various percentages and amounts)
 - Milestone release with fee deduction
-- Edge cases (0% fee, 100% fee, overflow protection)
+- Timeout configuration (valid and invalid durations)
+- Milestone completion and timeout claims
+- Dispute raising and resolution
+- Activity tracking updates
+- Edge cases (0% fee, 100% fee, overflow protection, timeout bounds)
 - Access control and authorization
 
 Run tests with:

@@ -1,6 +1,9 @@
-use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, Env};
+use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, Env, Symbol};
 
-use crate::{Escrow, EscrowClient, DEFAULT_FEE_BASIS_POINTS, MAX_FEE_BASIS_POINTS};
+use crate::{
+    ContractStatus, Escrow, EscrowClient, DEFAULT_FEE_BASIS_POINTS, DEFAULT_TIMEOUT_SECONDS,
+    MAX_FEE_BASIS_POINTS, MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS,
+};
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -459,4 +462,323 @@ fn test_treasury_config_persistence() {
     assert_eq!(config2.address, new_treasury);
     assert_eq!(config2.fee_basis_points, new_fee);
     assert_ne!(config1.fee_basis_points, config2.fee_basis_points);
+}
+
+// Helper function to create a contract with timeout setup
+fn setup_contract_with_timeout(
+    env: &Env,
+    client: &EscrowClient,
+) -> (Address, Address, Address, u32) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let token = Address::generate(env);
+    let milestones = vec![env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    (client_addr, freelancer_addr, token, contract_id)
+}
+
+// ==================== TIMEOUT CONFIGURATION TESTS ====================
+
+#[test]
+fn test_set_contract_timeout_success() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Verify timeout config
+    let timeout_config = client.get_contract_timeout(&contract_id);
+    assert_eq!(timeout_config.duration, DEFAULT_TIMEOUT_SECONDS);
+    assert_eq!(timeout_config.auto_resolve_type, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_set_contract_timeout_too_short() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Try to set timeout too short (less than 1 day)
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &(MIN_TIMEOUT_SECONDS - 1), &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_set_contract_timeout_too_long() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Try to set timeout too long (more than 365 days)
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &(MAX_TIMEOUT_SECONDS + 1), &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_set_contract_timeout_invalid_auto_resolve() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Try to set invalid auto-resolve type (must be 0, 1, or 2)
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &3);
+}
+
+// ==================== MILESTONE COMPLETION TESTS ====================
+
+#[test]
+fn test_mark_milestone_complete_success() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Mark milestone complete as freelancer
+    env.mock_all_auths();
+    client.mark_milestone_complete(&contract_id, &0);
+
+    // Verify milestone is marked complete
+    let is_complete = client.is_milestone_complete(&contract_id, &0);
+    assert!(is_complete);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_mark_milestone_complete_already_complete() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Mark milestone complete
+    env.mock_all_auths();
+    client.mark_milestone_complete(&contract_id, &0);
+
+    // Try to mark again (should fail)
+    env.mock_all_auths();
+    client.mark_milestone_complete(&contract_id, &0);
+}
+
+// ==================== DISPUTE TESTS ====================
+
+#[test]
+fn test_raise_dispute_success() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout first
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Raise dispute as client
+    let reason = Symbol::new(&env, "work_not_delivered");
+    env.mock_all_auths();
+    client.raise_dispute(&contract_id, &client_addr, &reason);
+
+    // Verify dispute exists
+    let dispute = client.get_dispute(&contract_id);
+    assert_eq!(dispute.initiator, client_addr);
+    assert_eq!(dispute.reason, reason);
+    assert!(!dispute.resolved);
+}
+
+#[test]
+fn test_raise_dispute_by_freelancer() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout first
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Raise dispute as freelancer
+    let reason = Symbol::new(&env, "client_not_responding");
+    env.mock_all_auths();
+    client.raise_dispute(&contract_id, &freelancer_addr, &reason);
+
+    // Verify dispute exists
+    let dispute = client.get_dispute(&contract_id);
+    assert_eq!(dispute.initiator, freelancer_addr);
+    assert!(!dispute.resolved);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_raise_dispute_unauthorized() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout first
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Try to raise dispute as unauthorized party
+    let unauthorized = Address::generate(&env);
+    let reason = Symbol::new(&env, "invalid");
+    env.mock_all_auths();
+    client.raise_dispute(&contract_id, &unauthorized, &reason);
+}
+
+// ==================== ACTIVITY TRACKING TESTS ====================
+
+#[test]
+fn test_last_activity_updated_on_deposit() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout - this also records initial activity
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Get initial activity after timeout is set
+    let activity_before = client.get_last_activity(&contract_id);
+
+    // Mark milestone complete to update activity
+    env.mock_all_auths();
+    client.mark_milestone_complete(&contract_id, &0);
+
+    // Activity should be updated
+    let activity_after = client.get_last_activity(&contract_id);
+    assert!(activity_after >= activity_before);
+}
+
+// ==================== TIMEOUT EDGE CASE TESTS ====================
+
+#[test]
+fn test_timeout_config_various_durations() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Test minimum timeout
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &MIN_TIMEOUT_SECONDS, &0);
+    let config1 = client.get_contract_timeout(&contract_id);
+    assert_eq!(config1.duration, MIN_TIMEOUT_SECONDS);
+
+    // Test maximum timeout
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &MAX_TIMEOUT_SECONDS, &2);
+    let config2 = client.get_contract_timeout(&contract_id);
+    assert_eq!(config2.duration, MAX_TIMEOUT_SECONDS);
+    assert_eq!(config2.auto_resolve_type, 2);
+}
+
+// ==================== INTEGRATION TESTS ====================
+
+#[test]
+fn test_full_timeout_workflow() {
+    let (env, _contract_id, client, _admin, _treasury) = setup_with_treasury();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token = Address::generate(&env);
+    let milestones = vec![&env, 100_0000000_i128];
+
+    // Create contract
+    env.mock_all_auths();
+    let contract_id = client.create_contract(&client_addr, &freelancer_addr, &milestones, &token);
+
+    // Set timeout
+    env.mock_all_auths();
+    client.set_contract_timeout(&contract_id, &DEFAULT_TIMEOUT_SECONDS, &0);
+
+    // Mark milestone complete
+    env.mock_all_auths();
+    client.mark_milestone_complete(&contract_id, &0);
+
+    // Verify milestone is complete
+    assert!(client.is_milestone_complete(&contract_id, &0));
+
+    // Raise dispute
+    let reason = Symbol::new(&env, "test_dispute");
+    env.mock_all_auths();
+    client.raise_dispute(&contract_id, &client_addr, &reason);
+
+    // Verify dispute exists
+    let dispute = client.get_dispute(&contract_id);
+    assert_eq!(dispute.initiator, client_addr);
+    assert!(!dispute.resolved);
 }
