@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
+};
 
 /// Lifecycle states of an escrow contract.
 ///
@@ -29,6 +31,47 @@ pub enum ContractStatus {
 pub struct Milestone {
     pub amount: i128,
     pub released: bool,
+    pub approved_by: Option<Address>,
+    pub approval_timestamp: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReleaseAuthorization {
+    ClientOnly = 0,
+    ClientAndArbiter = 1,
+    ArbiterOnly = 2,
+    MultiSig = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EscrowContract {
+    pub client: Address,
+    pub freelancer: Address,
+    pub arbiter: Option<Address>,
+    pub milestones: Vec<Milestone>,
+    pub status: ContractStatus,
+    pub release_auth: ReleaseAuthorization,
+    pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Approval {
+    None = 0,
+    Client = 1,
+    Arbiter = 2,
+    Both = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneApproval {
+    pub milestone_id: u32,
+    pub approvals: Map<Address, bool>,
+    pub required_approvals: u32,
+    pub approval_status: Approval,
 }
 
 /// Persistent record for a single escrow engagement.
@@ -52,14 +95,23 @@ pub struct Escrow;
 
 #[contractimpl]
 impl Escrow {
-    /// Create a new escrow contract between `client` and `freelancer`.
+    /// Create a new escrow contract with milestone release authorization
     ///
-    /// The contract is initialised in [`ContractStatus::Created`]. The
-    /// freelancer must call [`Self::accept_contract`] before the client can
-    /// fund it.
+    /// # Arguments
+    /// * `client` - Address of the client who funds the escrow
+    /// * `freelancer` - Address of the freelancer who receives payments
+    /// * `arbiter` - Optional arbiter address for dispute resolution
+    /// * `milestone_amounts` - Vector of milestone payment amounts
+    /// * `release_auth` - Authorization scheme for milestone releases
     ///
-    /// # Panics
-    /// Panics if `milestone_amounts` is empty.
+    /// # Returns
+    /// Contract ID for the newly created escrow
+    ///
+    /// # Errors
+    /// Panics if:
+    /// - Milestone amounts vector is empty
+    /// - Any milestone amount is zero or negative
+    /// - Client and freelancer addresses are the same
     pub fn create_contract(
         env: Env,
         client: Address,
