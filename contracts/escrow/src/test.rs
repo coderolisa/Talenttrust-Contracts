@@ -5,7 +5,7 @@ use crate::{Escrow, EscrowClient};
 // Shared test helpers.
 
 /// Register the contract and return a client with all auth mocked.
-fn make_client(env: &Env) -> EscrowClient {
+fn make_client(env: &Env) -> EscrowClient<'_> {
     env.mock_all_auths();
     let cid = env.register(Escrow, ());
     EscrowClient::new(env, &cid)
@@ -13,7 +13,7 @@ fn make_client(env: &Env) -> EscrowClient {
 
 /// Create a funded contract with `n` milestones of 100_000_000 stroops each.
 /// Returns `(client, contract_id, client_addr, freelancer_addr)`.
-fn funded_contract(env: &Env, n: u32) -> (EscrowClient, u32, Address, Address) {
+fn funded_contract(env: &Env, n: u32) -> (EscrowClient<'_>, u32, Address, Address) {
     let client = make_client(env);
     let client_addr = Address::generate(env);
     let freelancer_addr = Address::generate(env);
@@ -28,7 +28,7 @@ fn funded_contract(env: &Env, n: u32) -> (EscrowClient, u32, Address, Address) {
 
 /// Create a completed contract (all milestones released, `complete_contract` called).
 /// Returns `(client, contract_id)`.
-fn completed_contract(env: &Env, n: u32) -> (EscrowClient, u32) {
+fn completed_contract(env: &Env, n: u32) -> (EscrowClient<'_>, u32) {
     let (client, cid, _, _) = funded_contract(env, n);
     for i in 0..n {
         client.release_milestone(&cid, &i);
