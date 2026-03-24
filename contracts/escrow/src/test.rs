@@ -206,7 +206,7 @@ fn test_approve_milestone_release_client_and_arbiter() {
     client.create_contract(
         &client_addr,
         &freelancer_addr,
-        &Some(arbiter_addr),
+        &Some(arbiter_addr.clone()),
         &milestones,
         &ReleaseAuthorization::ClientAndArbiter,
     );
