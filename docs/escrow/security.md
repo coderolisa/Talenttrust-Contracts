@@ -1,38 +1,31 @@
-# Escrow Pause/Emergency Threat Model
+# Escrow Security Notes
 
-## Scope
+This document summarizes security assumptions and threat scenarios for access-control enforcement.
 
-This model covers pause and emergency controls in `contracts/escrow/src/lib.rs`.
+## Security Controls
 
-## Assumptions
-
-- The admin key is securely managed.
-- Soroban address authentication behaves as expected.
-- Off-chain operators monitor incidents and invoke controls quickly.
+- Explicit role checks on all mutating methods.
+- Mandatory auth calls (`require_auth`) for role-bearing callers.
+- Role-aware release gating based on `ReleaseAuthorization`.
+- Strict state transition validation (`Created` -> `Funded` -> `Completed`).
+- Defensive checks for invalid milestone IDs and duplicate actions.
+- Checked arithmetic for milestone total and reputation accumulation.
 
 ## Threat Scenarios and Mitigations
 
-1. Unauthorized pause/unpause/emergency calls.
-Mitigation: `require_admin` gate with address auth on all control endpoints.
+- Unauthorized deposit, approval, release, or reputation issuance:
+  - Mitigated by caller-role matching against contract state.
+- Freelancer impersonation in reputation flow:
+  - Mitigated by explicit freelancer-address equality check with contract record.
+- Arbiter misuse or ambiguous arbiter identity:
+  - Mitigated by arbiter distinctness checks and required-arbiter mode validation.
+- Replay or duplicate approvals/releases:
+  - Mitigated by per-milestone approval flags and release-state guard.
+- Invalid state progression:
+  - Mitigated by explicit status guards before each mutation.
 
-2. Re-initialization to seize control.
-Mitigation: `initialize` is single-use and returns `AlreadyInitialized` on repeat calls.
+## Residual Assumptions
 
-3. Partial recovery from emergency state.
-Mitigation: `unpause` returns `EmergencyActive` while emergency flag is set.
-
-4. State-changing execution during incident containment.
-Mitigation: all critical mutating endpoints check `ensure_not_paused`.
-
-## Residual Risks
-
-- Admin key compromise can still misuse pause controls.
-- No timelock/multi-sig enforced in this contract version.
-- Emergency actions are not event-logged in this baseline implementation.
-
-## Recommended Next Hardening Steps
-
-1. Move admin to a multi-sig account.
-2. Add role separation for `pauser` and `resolver`.
-3. Add on-chain event emission for pause state transitions.
-4. Add optional time-delayed unpause for high-severity incidents.
+- Fund transfers are represented logically in state; token transfer integration is out of scope.
+- Dispute workflow (`Disputed`) remains reserved for future implementation.
+- On-chain fee/resource precision should be validated via network simulation tools before production.
