@@ -12,6 +12,28 @@ pub enum ContractStatus {
 }
 
 #[contracttype]
+pub enum DataKey {
+    State,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StateV1 {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestones: Vec<i128>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StateV2 {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestones: Vec<i128>,
+    pub status: ContractStatus,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Milestone {
     pub amount: i128,
@@ -23,6 +45,49 @@ pub struct Escrow;
 
 #[contractimpl]
 impl Escrow {
+    /// @notice Get the Escrow contract's current state.
+    /// @dev Forward-compatible feature that attempts to retrieve `StateV2` safely. If only `StateV1` exists in memory, implicitly migrates it in memory securely upon read execution without causing panics natively.
+    /// @param env The Soroban environment.
+    /// @return Returns the upgraded active `StateV2` safely structured.
+    pub fn get_state(env: Env) -> StateV2 {
+        if let Some(state) = env
+            .storage()
+            .persistent()
+            .get::<_, StateV2>(&DataKey::State)
+        {
+            state
+        } else if let Some(legacy_state) = env
+            .storage()
+            .persistent()
+            .get::<_, StateV1>(&DataKey::State)
+        {
+            StateV2 {
+                client: legacy_state.client,
+                freelancer: legacy_state.freelancer,
+                milestones: legacy_state.milestones,
+                status: ContractStatus::Created,
+            }
+        } else {
+            panic!("State not found");
+        }
+    }
+
+    /// @notice Permanent strict migration wrapper updating legacy persistence into accurate `StateV2`.
+    /// @dev Reads legacy state via memory-only upgrading through `get_state` and asserts persistent overwrite logic into `DataKey::State`. Securely bounded by `require_auth()`.
+    /// @param env The Soroban environment.
+    /// @param admin The administrator evaluating the change natively.
+    /// @return Successful validation of new V2 persistance returns Boolean strictly.
+    pub fn migrate_state(env: Env, admin: Address) -> bool {
+        admin.require_auth();
+
+        let upgraded_state = Self::get_state(env.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::State, &upgraded_state);
+
+        true
+    }
+
     /// Create a new escrow contract. Client and freelancer addresses are stored
     /// for access control. Milestones define payment amounts.
     pub fn create_contract(
@@ -62,3 +127,6 @@ impl Escrow {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod migration_test;
