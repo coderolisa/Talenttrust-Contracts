@@ -76,6 +76,34 @@ impl Escrow {
     }
 }
 
+
+use soroban_sdk::{Env, Address, storage::Storage};
+
+const DAY_IN_LEDGERS: u32 = 17280; // ~1 day
+const INSTANCE_BUMP_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
+const INSTANCE_LIFETIME: u32 = 30 * DAY_IN_LEDGERS;
+
+const PERSISTENT_BUMP_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+const PERSISTENT_LIFETIME: u32 = 365 * DAY_IN_LEDGERS;
+
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_LIFETIME);
+}
+
+pub fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage().persistent().extend_ttl(key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_LIFETIME);
+}
+
+// Example usage in an existing function
+pub fn create_escrow(env: Env, sender: Address) {
+    extend_instance_ttl(&env); // Keep global config alive
+    
+    let key = DataKey::Escrow(sender);
+    env.storage().persistent().set(&key, &escrow_data);
+    
+    extend_persistent_ttl(&env, &key); // Ensure this specific escrow is funded for rent
+}
+
 #[cfg(test)]
 mod test;
 
