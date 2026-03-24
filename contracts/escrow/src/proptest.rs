@@ -18,7 +18,7 @@ proptest! {
 
         let client_addr = Address::generate(env_ref);
         let freelancer_addr = Address::generate(env_ref);
-        
+
         let mut total_milestone_amount = 0;
         let mut milestone_vec = vec![env_ref];
         for a in &amounts {
@@ -59,7 +59,7 @@ proptest! {
                         break;
                     }
                 }
-                
+
                 if all_released {
                     expected_status = ContractStatus::Completed;
                 }

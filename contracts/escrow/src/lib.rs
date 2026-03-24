@@ -49,7 +49,9 @@ impl Escrow {
         milestone_amounts: Vec<i128>,
     ) -> u32 {
         let contract_id: u32 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
-        env.storage().instance().set(&DataKey::NextId, &(contract_id + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::NextId, &(contract_id + 1));
 
         let mut milestones = Vec::new(&env);
         for amount in milestone_amounts.iter() {
@@ -67,14 +69,20 @@ impl Escrow {
             balance: 0,
         };
 
-        env.storage().instance().set(&DataKey::Contract(contract_id), &state);
+        env.storage()
+            .instance()
+            .set(&DataKey::Contract(contract_id), &state);
         contract_id
     }
 
     /// Deposit funds into escrow. Only the client may call this.
     /// In a real implementation this would transfer tokens.
     pub fn deposit_funds(env: Env, contract_id: u32, amount: i128) -> bool {
-        let mut state: EscrowState = env.storage().instance().get(&DataKey::Contract(contract_id)).unwrap();
+        let mut state: EscrowState = env
+            .storage()
+            .instance()
+            .get(&DataKey::Contract(contract_id))
+            .unwrap();
         if state.status != ContractStatus::Created {
             return false;
         }
@@ -90,13 +98,19 @@ impl Escrow {
 
         state.balance += amount;
         state.status = ContractStatus::Funded;
-        env.storage().instance().set(&DataKey::Contract(contract_id), &state);
+        env.storage()
+            .instance()
+            .set(&DataKey::Contract(contract_id), &state);
         true
     }
 
     /// Release a milestone payment to the freelancer after verification.
     pub fn release_milestone(env: Env, contract_id: u32, milestone_id: u32) -> bool {
-        let mut state: EscrowState = env.storage().instance().get(&DataKey::Contract(contract_id)).unwrap();
+        let mut state: EscrowState = env
+            .storage()
+            .instance()
+            .get(&DataKey::Contract(contract_id))
+            .unwrap();
         if state.status != ContractStatus::Funded {
             return false;
         }
@@ -112,7 +126,7 @@ impl Escrow {
 
         milestone.released = true;
         state.milestones.set(milestone_id, milestone);
-        
+
         let amount_released = state.milestones.get(milestone_id).unwrap().amount;
         state.balance -= amount_released;
 
@@ -127,13 +141,18 @@ impl Escrow {
             state.status = ContractStatus::Completed;
         }
 
-        env.storage().instance().set(&DataKey::Contract(contract_id), &state);
+        env.storage()
+            .instance()
+            .set(&DataKey::Contract(contract_id), &state);
         true
     }
 
     /// Get current state of the escrow. Useful for tests and UIs.
     pub fn get_state(env: Env, contract_id: u32) -> EscrowState {
-        env.storage().instance().get(&DataKey::Contract(contract_id)).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::Contract(contract_id))
+            .unwrap()
     }
 
     /// Issue a reputation credential for the freelancer after contract completion.

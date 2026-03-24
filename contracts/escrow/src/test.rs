@@ -51,7 +51,7 @@ fn test_release_milestone() {
     let freelancer_addr = Address::generate(&env);
     let milestones = vec![&env, 1_000_0000000_i128];
     let id = client.create_contract(&client_addr, &freelancer_addr, &milestones);
-    
+
     client.deposit_funds(&id, &1_000_0000000);
     let result = client.release_milestone(&id, &0);
     assert!(result);
