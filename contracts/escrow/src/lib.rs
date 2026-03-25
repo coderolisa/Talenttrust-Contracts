@@ -4,6 +4,11 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
 };
 
+const DEFAULT_MIN_MILESTONE_AMOUNT: i128 = 1;
+const DEFAULT_MAX_MILESTONES: u32 = 16;
+const DEFAULT_MIN_REPUTATION_RATING: i128 = 1;
+const DEFAULT_MAX_REPUTATION_RATING: i128 = 5;
+
 /// Persistent lifecycle state for an escrow agreement.
 ///
 /// Security notes:
@@ -102,6 +107,16 @@ pub struct ReputationRecord {
     pub last_rating: i128,
 }
 
+/// Governed protocol parameters used by the escrow validation logic.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolParameters {
+    pub min_milestone_amount: i128,
+    pub max_milestones: u32,
+    pub min_reputation_rating: i128,
+    pub max_reputation_rating: i128,
+}
+
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
@@ -109,6 +124,9 @@ enum DataKey {
     Contract(u32),
     Reputation(Address),
     PendingReputationCredits(Address),
+    GovernanceAdmin,
+    PendingGovernanceAdmin,
+    ProtocolParameters,
 }
 
 #[contract]
@@ -512,6 +530,24 @@ impl Escrow {
             .get(&DataKey::PendingReputationCredits(freelancer))
             .unwrap_or(0)
     }
+
+    /// Returns the active protocol parameters.
+    ///
+    /// If governance has not been initialized yet, this returns the safe default
+    /// parameters baked into the contract.
+    pub fn get_protocol_parameters(env: Env) -> ProtocolParameters {
+        Self::protocol_parameters(&env)
+    }
+
+    /// Returns the current governance admin, if governance has been initialized.
+    pub fn get_governance_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::GovernanceAdmin)
+    }
+
+    /// Returns the pending governance admin, if an admin transfer is in flight.
+    pub fn get_pending_governance_admin(env: Env) -> Option<Address> {
+        Self::pending_governance_admin(&env)
+    }
 }
 
 impl Escrow {
@@ -539,6 +575,62 @@ impl Escrow {
         let key = DataKey::PendingReputationCredits(freelancer.clone());
         let current = env.storage().persistent().get::<_, u32>(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &(current + 1));
+    }
+
+    fn governance_admin(env: &Env) -> Address {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceAdmin)
+            .unwrap_or_else(|| panic!("protocol governance is not initialized"))
+    }
+
+    fn pending_governance_admin(env: &Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingGovernanceAdmin)
+    }
+
+    fn protocol_parameters(env: &Env) -> ProtocolParameters {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProtocolParameters)
+            .unwrap_or_else(Self::default_protocol_parameters)
+    }
+
+    fn default_protocol_parameters() -> ProtocolParameters {
+        ProtocolParameters {
+            min_milestone_amount: DEFAULT_MIN_MILESTONE_AMOUNT,
+            max_milestones: DEFAULT_MAX_MILESTONES,
+            min_reputation_rating: DEFAULT_MIN_REPUTATION_RATING,
+            max_reputation_rating: DEFAULT_MAX_REPUTATION_RATING,
+        }
+    }
+
+    fn validated_protocol_parameters(
+        min_milestone_amount: i128,
+        max_milestones: u32,
+        min_reputation_rating: i128,
+        max_reputation_rating: i128,
+    ) -> ProtocolParameters {
+        if min_milestone_amount <= 0 {
+            panic!("minimum milestone amount must be positive");
+        }
+        if max_milestones == 0 {
+            panic!("maximum milestones must be positive");
+        }
+        if min_reputation_rating <= 0 {
+            panic!("minimum reputation rating must be positive");
+        }
+        if min_reputation_rating > max_reputation_rating {
+            panic!("reputation rating range is invalid");
+        }
+
+        ProtocolParameters {
+            min_milestone_amount,
+            max_milestones,
+            min_reputation_rating,
+            max_reputation_rating,
+        }
     }
 
     fn all_milestones_released(milestones: &Vec<Milestone>) -> bool {

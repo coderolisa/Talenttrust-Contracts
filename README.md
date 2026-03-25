@@ -15,8 +15,25 @@ The escrow contract now enforces a minimal on-chain state machine instead of pla
 - Funding is accepted exactly once and must match the total milestone amount.
 - Milestones can be released once each and only by the recorded client.
 - Reputation entries are gated behind completed-contract credits and are treated as informational data.
+- Protocol-wide validation parameters can be guarded by a governance admin and updated through audited state transitions.
 
 Reviewer-focused contract notes and the formal threat model live in [docs/escrow/README.md](/home/christopher/drips_projects/Talenttrust-Contracts/docs/escrow/README.md).
+
+## Protocol governance
+
+The escrow contract supports guarded protocol parameter updates for live validation logic:
+
+- A one-time governance initialization assigns the first protocol admin.
+- The admin can update protocol parameters such as minimum milestone amount, maximum milestones per contract, and permitted reputation rating bounds.
+- Admin transfer is two-step: current admin proposes, pending admin accepts.
+- Before governance is initialized, the contract uses safe built-in defaults so existing flows remain available.
+
+Current defaults:
+
+- `min_milestone_amount = 1`
+- `max_milestones = 16`
+- `min_reputation_rating = 1`
+- `max_reputation_rating = 5`
 
 ## Prerequisites
 
