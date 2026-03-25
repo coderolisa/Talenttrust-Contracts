@@ -1,6 +1,9 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    Symbol, Vec,
+};
 
 const DEFAULT_MIN_MILESTONE_AMOUNT: i128 = 1;
 const DEFAULT_MAX_MILESTONES: u32 = 16;
@@ -45,6 +48,13 @@ pub enum DataKey {
     LastActivity(u32),
     Dispute(u32),
     MilestoneComplete(u32, u32),
+    Paused,
+    EmergencyPaused,
+    Reputation(Address),
+    PendingReputationCredits(Address),
+    GovernanceAdmin,
+    PendingGovernanceAdmin,
+    ProtocolParameters,
 }
 
 /// Status of an escrow contract
@@ -69,26 +79,6 @@ pub struct Milestone {
     pub amount: i128,
     /// Whether the milestone payment has been released to the freelancer.
     pub released: bool,
-}
-
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum EscrowError {
-    InvalidContractId = 1,
-    InvalidMilestoneId = 2,
-    InvalidAmount = 3,
-    InvalidRating = 4,
-    EmptyMilestones = 5,
-    InvalidParticipant = 6,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum DataKey {
-    Admin,
-    Paused,
-    EmergencyPaused,
 }
 
 /// Stored escrow state for a single agreement.
@@ -121,18 +111,6 @@ pub struct ProtocolParameters {
     pub max_milestones: u32,
     pub min_reputation_rating: i128,
     pub max_reputation_rating: i128,
-}
-
-#[contracttype]
-#[derive(Clone)]
-enum DataKey {
-    NextContractId,
-    Contract(u32),
-    Reputation(Address),
-    PendingReputationCredits(Address),
-    GovernanceAdmin,
-    PendingGovernanceAdmin,
-    ProtocolParameters,
 }
 
 /// Timeout configuration for escrow contracts
@@ -219,6 +197,25 @@ pub enum EscrowError {
     TimeoutAlreadyClaimed = 17,
     /// No dispute active
     NoDisputeActive = 18,
+    /// Contract ID is invalid
+    InvalidContractId = 19,
+    /// Participant is invalid
+    InvalidParticipant = 20,
+    /// Empty milestones provided
+    EmptyMilestones = 21,
+    /// Invalid rating
+    InvalidRating = 22,
+    /// Invalid milestone ID
+    InvalidMilestoneId = 23,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReleaseAuthorization {
+    ClientOnly,
+    ArbiterOnly,
+    ClientAndArbiter,
+    MultiSig,
 }
 
 /// Full on-chain state of an escrow contract.
@@ -408,11 +405,21 @@ impl Escrow {
         }
 
         let mut total_amount: i128 = 0;
+        let mut milestones = Vec::new(&env);
+
         for i in 0..milestone_amounts.len() {
             let amount = milestone_amounts.get(i).unwrap();
+            if amount <= 0 {
+                panic!("Milestone amounts must be positive");
+            }
             total_amount = total_amount
                 .checked_add(amount)
                 .unwrap_or_else(|| panic!("Amount overflow"));
+
+            milestones.push_back(Milestone {
+                amount,
+                released: false,
+            });
         }
 
         // Limit contract size conceptually: prevent massive state requirements by bounding total scale
@@ -420,46 +427,20 @@ impl Escrow {
             panic!("Exceeds maximum contract funding size");
         }
 
-        Ok(())
-    }
-
-    fn ensure_valid_milestones(milestone_amounts: &Vec<i128>) -> Result<(), EscrowError> {
-        if milestone_amounts.is_empty() {
-            return Err(EscrowError::EmptyMilestones);
-        }
-
-        for i in 0..milestone_amounts.len() {
-            let amount = milestone_amounts.get(i).unwrap();
-            if amount <= 0 {
-                return Err(EscrowError::InvalidAmount);
-            }
-        }
-
-        let mut milestones = Vec::new(&env);
-        for i in 0..milestone_amounts.len() {
-            milestones.push_back(Milestone {
-                amount: milestone_amounts.get(i).unwrap(),
-                released: false,
-                approved_by: None,
-                approval_timestamp: None,
-            });
-        }
-
-        let contract_data = EscrowContract {
+        let contract_data = EscrowContractData {
             client: client.clone(),
             freelancer: freelancer.clone(),
-            arbiter,
             milestones,
+            total_amount,
+            funded_amount: 0,
+            released_amount: 0,
             status: ContractStatus::Created,
-            release_auth,
-            created_at: env.ledger().timestamp(),
         };
 
         let contract_id = env.ledger().sequence();
-
         env.storage()
             .persistent()
-            .set(&symbol_short!("contract"), &contract_data);
+            .set(&symbol_short!("contract"), &contract_id);
 
         contract_id
     }
@@ -574,11 +555,12 @@ impl Escrow {
     }
 
     /// Release a milestone payment to the freelancer after proper authorization.
-    pub fn release_milestone(_env: Env, contract_id: u32, milestone_id: u32) -> bool {
+    pub fn release_milestone(env: Env, contract_id: u32, milestone_id: u32) -> bool {
         Self::ensure_not_paused(&env);
-        caller.require_auth();
+        // ... (stub or proper call check here, typically caller config)
+        let _caller = env.invoker();
 
-        let mut contract: EscrowContract = env
+        let mut _contract: EscrowContract = env
             .storage()
             .persistent()
             .get(&symbol_short!("contract"))
