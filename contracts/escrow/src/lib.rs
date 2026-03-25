@@ -34,7 +34,7 @@ pub const MAX_TIMEOUT_SECONDS: u64 = 31_536_000;
 
 /// Data keys for contract storage
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Admin,
     TreasuryConfig,
@@ -79,6 +79,10 @@ pub struct Milestone {
     pub amount: i128,
     /// Whether the milestone payment has been released to the freelancer.
     pub released: bool,
+    /// The address that approved this milestone (Client/Arbiter)
+    pub approved_by: Option<Address>,
+    /// The ledger timestamp of the approval
+    pub approval_timestamp: Option<u64>,
 }
 
 #[contracttype]
@@ -415,6 +419,8 @@ impl Escrow {
             milestones.push_back(Milestone {
                 amount,
                 released: false,
+                approved_by: None,
+                approval_timestamp: None,
             });
         }
 
@@ -438,7 +444,7 @@ impl Escrow {
         let contract_id = env.ledger().sequence();
         env.storage()
             .persistent()
-            .set(&symbol_short!("contract"), &contract_id);
+            .set(&symbol_short!("contract"), &contract_data);
 
         contract_id
     }
