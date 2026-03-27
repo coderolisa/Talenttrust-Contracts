@@ -4,6 +4,8 @@ Soroban smart contracts for the TalentTrust decentralized freelancer escrow prot
 
 ## What's in this repo
 
+- **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments, reputation credential issuance, and emergency pause controls.
+- **Escrow docs** (`docs/escrow`): Escrow operations, security notes, and pause/emergency threat model.
 - **Escrow contract** (`contracts/escrow`): Holds funds in escrow, supports milestone-based payments and reputation credential issuance.
 - **Escrow docs** (`docs/escrow`): Upgradeable storage layout strategy, migration safety notes, and security assumptions.
 
@@ -30,8 +32,6 @@ The escrow contract rejects malformed contract-creation inputs before any state 
 - Every milestone amount must be strictly positive (`> 0`).
 - Milestone count must be between `1` and `MAX_MILESTONES` (`20`).
 
-Deposits continue to enforce a strict positive amount (`amount > 0`).
-
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (stable, 1.75+)
@@ -51,8 +51,12 @@ cargo build
 # Run tests
 cargo test
 
+# Run escrow performance/gas baseline tests only
+cargo test test::performance
+
 # Run upgradeable storage planning tests only
 cargo test test::storage
+
 
 # Check formatting
 cargo fmt --all -- --check

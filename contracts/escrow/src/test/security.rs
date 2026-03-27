@@ -195,3 +195,6 @@ fn test_create_requires_client_authorization() {
 
     let _ = client.create_contract(&client_addr, &freelancer_addr, &default_milestones(&env));
 }
+    });
+}
+

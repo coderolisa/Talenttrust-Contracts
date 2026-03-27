@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
 
 /// Persistent storage keys used by the Escrow contract.
 ///
@@ -52,6 +50,30 @@ pub struct Milestone {
     pub released: bool,
 }
 
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum EscrowError {
+    InvalidContractId = 1,
+    InvalidMilestoneId = 2,
+    InvalidAmount = 3,
+    InvalidRating = 4,
+    EmptyMilestones = 5,
+    InvalidParticipant = 6,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DataKey {
+    Admin,
+    Paused,
+    EmergencyPaused,
+}
+
+/// Stored escrow state for a single agreement.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowContractData {
 /// Escrow record layout for storage version `V1`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +90,7 @@ pub struct EscrowRecord {
     pub reputation_issued: bool,
 }
 
+/// Reputation state derived from completed escrow contracts.
 /// Freelancer reputation aggregate layout for storage version `V1`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +102,24 @@ pub struct Reputation {
 /// Public description of the active storage namespaces.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolParameters {
+    pub min_milestone_amount: i128,
+    pub max_milestones: u32,
+    pub min_reputation_rating: i128,
+    pub max_reputation_rating: i128,
+
+}
+
+#[contracttype]
+#[derive(Clone)]
+enum DataKey {
+    NextContractId,
+    Contract(u32),
+    Reputation(Address),
+    PendingReputationCredits(Address),
+    GovernanceAdmin,
+    PendingGovernanceAdmin,
+    ProtocolParameters,
 pub struct StorageLayoutPlan {
     pub version: u32,
     pub meta_namespace: Symbol,
@@ -169,6 +210,7 @@ pub struct Escrow;
 
 #[contractimpl]
 impl Escrow {
+    /// Initializes admin-managed pause controls.
     /// Returns the currently active storage layout version.
     ///
     /// If version metadata is missing, this initializes the contract metadata
@@ -205,11 +247,50 @@ impl Escrow {
         Ok(true)
     }
 
-    /// Creates a new escrow contract under storage layout `V1`.
+    /// Resolves emergency mode and restores normal operations.
+    pub fn resolve_emergency(env: Env) -> bool {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyPaused, &false);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        true
+    }
+
+    /// Read-only pause status.
+    pub fn is_paused(env: Env) -> bool {
+        Self::is_paused_internal(&env)
+    }
+
+    /// Read-only emergency status.
+    pub fn is_emergency(env: Env) -> bool {
+        Self::is_emergency_internal(&env)
+    }
+
+    /// Create a new escrow contract with milestone release authorization
+    ///
+    /// # Arguments
+    /// * `client` - Address of the client who funds the escrow
+    /// * `freelancer` - Address of the freelancer who receives payments
+    /// * `arbiter` - Optional arbiter address for dispute resolution
+    /// * `milestone_amounts` - Vector of milestone payment amounts
+    /// * `release_auth` - Authorization scheme for milestone releases
+    ///
+    /// # Returns
+    /// Contract ID for the newly created escrow
+    ///
+    /// # Errors
+    /// Panics if:
+    /// - Contract is paused
+    /// - Milestone amounts vector is empty
+    /// - Any milestone amount is zero or negative
+    /// - Client and freelancer addresses are the same
+
     pub fn create_contract(
         env: Env,
         client: Address,
         freelancer: Address,
+        arbiter: Option<Address>,
         milestone_amounts: Vec<i128>,
     ) -> Result<u32, EscrowError> {
         ensure_storage_layout(&env)?;
@@ -581,7 +662,7 @@ mod tests {
 
         Escrow::check_funding_invariants(funding);
     }
-
+  
     #[test]
     #[should_panic(expected = "total_available != total_funded - total_released")]
     fn test_funding_invariants_negative_available() {
