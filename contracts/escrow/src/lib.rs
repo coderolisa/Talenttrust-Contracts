@@ -44,7 +44,7 @@ pub enum ContractStatus {
 
 /// Represents a payment milestone in the escrow contract.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Milestone {
     /// Payment amount in stroops (1 XLM = 10_000_000 stroops).
     pub amount: i128,
