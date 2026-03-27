@@ -1,241 +1,220 @@
-# Escrow Contract — Developer Reference
-
-Soroban smart contract implementing milestone-based escrow for the TalentTrust
-freelancer protocol on the Stellar network.
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Data Types](#data-types)
-3. [Public Methods](#public-methods)
-4. [Authorization Schemes](#authorization-schemes)
-5. [Contract Lifecycle](#contract-lifecycle)
-6. [Failure Scenarios](#failure-scenarios)
-7. [Security Notes](#security-notes)
-
----
+# Escrow Contract Documentation
 
 ## Overview
 
-The escrow contract holds funds on behalf of a **client** and releases them to
-a **freelancer** as individual milestones are approved. An optional **arbiter**
-can be designated for dispute resolution or multi-signature flows.
+The TalentTrust Escrow contract provides a decentralized escrow system for freelancer-client relationships with built-in dispute resolution capabilities. Built on Soroban (Stellar), it ensures secure fund management and fair dispute resolution.
 
----
+## Architecture
 
-## Data Types
+### Core Components
 
-### `ContractStatus`
+1. **EscrowContract**: Main contract structure storing client, freelancer, milestones, and status
+2. **Dispute**: Dispute tracking with evidence, resolution type, and payout amounts
+3. **Access Control**: Role-based permissions for admin, arbitrator, client, and freelancer
 
-| Variant     | Value | Description                                              |
-|-------------|-------|----------------------------------------------------------|
-| `Created`   | 0     | Contract created; awaiting client deposit.               |
-| `Funded`    | 1     | Client has deposited the full escrow amount.             |
-| `Completed` | 2     | All milestones released; contract is closed.             |
-| `Disputed`  | 3     | Dispute raised; funds frozen pending resolution.         |
-
-### `ReleaseAuthorization`
-
-| Variant            | Value | Who may approve / release                        |
-|--------------------|-------|--------------------------------------------------|
-| `ClientOnly`       | 0     | Client only.                                     |
-| `ClientAndArbiter` | 1     | Client **or** arbiter (either suffices).         |
-| `ArbiterOnly`      | 2     | Arbiter only.                                    |
-| `MultiSig`         | 3     | Both client and arbiter (partial implementation).|
-
-### `Milestone`
-
-| Field                | Type              | Description                                      |
-|----------------------|-------------------|--------------------------------------------------|
-| `amount`             | `i128`            | Payment amount in stroops.                       |
-| `released`           | `bool`            | Whether payment has been released.               |
-| `approved_by`        | `Option<Address>` | Last approver address.                           |
-| `approval_timestamp` | `Option<u64>`     | Ledger timestamp of approval.                    |
-
-### `EscrowContract`
-
-| Field         | Type                   | Description                                      |
-|---------------|------------------------|--------------------------------------------------|
-| `client`      | `Address`              | Funds the escrow.                                |
-| `freelancer`  | `Address`              | Receives milestone payments.                     |
-| `arbiter`     | `Option<Address>`      | Optional dispute / multi-sig party.              |
-| `milestones`  | `Vec<Milestone>`       | Ordered milestone list.                          |
-| `status`      | `ContractStatus`       | Current lifecycle state.                         |
-| `release_auth`| `ReleaseAuthorization` | Authorization scheme.                            |
-| `created_at`  | `u64`                  | Ledger timestamp at creation.                    |
-
----
-
-## Public Methods
-
-### `create_contract`
+### Storage Structure
 
 ```
-create_contract(
-    env: Env,
-    client: Address,
-    freelancer: Address,
-    arbiter: Option<Address>,
-    milestone_amounts: Vec<i128>,
-    release_auth: ReleaseAuthorization,
-) -> u32
+├── ADMIN: Address           # Contract administrator
+├── ARBITRATOR: Address     # Dispute resolver
+├── CONTRACTS: Map<u32, EscrowContract>
+├── DISPUTES: Map<u32, Dispute>
+├── NEXT_CONTRACT_ID: u32
+└── NEXT_DISPUTE_ID: u32
 ```
 
-Creates a new escrow record and returns a contract ID (ledger sequence number).
+## Contract States
 
-**Panics:**
-- `"At least one milestone required"` — `milestone_amounts` is empty.
-- `"Client and freelancer cannot be the same address"` — identical addresses.
-- `"Milestone amounts must be positive"` — any amount ≤ 0.
+### ContractStatus
+- `Created`: Contract created, awaiting funding
+- `Funded`: Funds deposited, milestones available for release
+- `Completed`: All milestones released successfully
+- `Disputed`: Dispute opened, contract paused
+- `Resolved`: Dispute resolved, payouts processed
+- `Cancelled`: Contract cancelled (future feature)
 
----
+### DisputeStatus
+- `Open`: Dispute created, awaiting review
+- `InReview`: Dispute being reviewed by arbitrator
+- `Resolved`: Dispute resolved with payouts determined
 
-### `deposit_funds`
+## Functions
 
-```
-deposit_funds(env: Env, _contract_id: u32, caller: Address, amount: i128) -> bool
-```
+### Initialization
 
-Deposits the full escrow amount. Transitions status `Created → Funded`.
+#### `initialize(admin: Address, arbitrator: Address)`
+- **Purpose**: Initialize contract with admin and arbitrator addresses
+- **Access**: Anyone (but requires admin signature)
+- **Security**: Prevents re-initialization
 
-**Requires auth:** `caller` (must be the client).
+### Contract Management
 
-**Panics:**
-- `"Contract not found"` — no contract in storage.
-- `"Only client can deposit funds"` — caller is not the client.
-- `"Contract must be in Created status to deposit funds"` — wrong status.
-- `"Deposit amount must equal total milestone amounts"` — amount mismatch.
+#### `create_contract(client: Address, freelancer: Address, milestone_amounts: Vec<i128>) -> u32`
+- **Purpose**: Create new escrow contract with milestone payments
+- **Access**: Client only
+- **Returns**: Unique contract ID
 
----
+#### `deposit_funds(contract_id: u32, amount: i128) -> bool`
+- **Purpose**: Deposit total contract amount into escrow
+- **Access**: Client only
+- **Validation**: Amount must equal total milestone amounts
 
-### `approve_milestone_release`
+#### `release_milestone(contract_id: u32, milestone_id: u32) -> bool`
+- **Purpose**: Release specific milestone payment to freelancer
+- **Access**: Client only
+- **Validation**: Milestone must exist and not be previously released
 
-```
-approve_milestone_release(
-    env: Env,
-    _contract_id: u32,
-    caller: Address,
-    milestone_id: u32,
-) -> bool
-```
+### Dispute Resolution
 
-Records an approval for a milestone. Does **not** release funds.
+#### `create_dispute(contract_id: u32, reason: Symbol, evidence: Vec<Symbol>) -> u32`
+- **Purpose**: Create dispute for funded contract
+- **Access**: Client or Freelancer only
+- **Returns**: Unique dispute ID
+- **Effect**: Contract status changes to `Disputed`
 
-**Requires auth:** `caller`.
+#### `resolve_dispute(dispute_id: u32, resolution: DisputeResolution, client_payout: i128, freelancer_payout: i128) -> bool`
+- **Purpose**: Resolve dispute with specific outcome
+- **Access**: Arbitrator only
+- **Resolution Types**:
+  - `FullRefund`: 100% to client
+  - `PartialRefund`: 70% to client, 30% to freelancer
+  - `FullPayout`: 100% to freelancer
+  - `Split`: Custom amounts (must total contract amount)
 
-**Panics:**
-- `"Contract not found"` — no contract in storage.
-- `"Contract must be in Funded status to approve milestones"` — wrong status.
-- `"Invalid milestone ID"` — `milestone_id` out of range.
-- `"Milestone already released"` — milestone already paid out.
-- `"Caller not authorized to approve milestone release"` — not permitted under `release_auth`.
-- `"Milestone already approved by this address"` — duplicate approval.
+### Admin Functions
 
----
+#### `update_admin(new_admin: Address)`
+- **Purpose**: Update admin address
+- **Access**: Current admin only
 
-### `release_milestone`
+#### `update_arbitrator(new_arbitrator: Address)`
+- **Purpose**: Update arbitrator address
+- **Access**: Admin only
 
-```
-release_milestone(
-    env: Env,
-    _contract_id: u32,
-    caller: Address,
-    milestone_id: u32,
-) -> bool
-```
+## Security Features
 
-Releases a milestone payment to the freelancer. Transitions contract to
-`Completed` when all milestones are released.
+### Access Control
+- **Admin**: Can update arbitrator, manage contract settings
+- **Arbitrator**: Can resolve disputes, determine payouts
+- **Client**: Can create contracts, deposit funds, release milestones, create disputes
+- **Freelancer**: Can create disputes, receive milestone payments
 
-**Requires auth:** `caller`.
+### Validation Rules
+1. Contract must be in correct state for operations
+2. Financial amounts must be mathematically valid
+3. Only authorized parties can perform actions
+4. Dispute resolution payouts are deterministic
 
-**Panics:**
-- `"Contract not found"` — no contract in storage.
-- `"Contract must be in Funded status to release milestones"` — wrong status.
-- `"Invalid milestone ID"` — `milestone_id` out of range.
-- `"Milestone already released"` — already paid out.
-- `"Insufficient approvals for milestone release"` — required approvals absent.
+### Threat Mitigation
+- **Unauthorized access**: Role-based authentication
+- **Invalid payouts**: Mathematical validation of splits
+- **Double spending**: State machine prevents invalid transitions
+- **Front-running**: Timestamp tracking for dispute resolution
 
----
+## Usage Examples
 
-### `issue_reputation`
+### Basic Workflow
 
-```
-issue_reputation(_env: Env, _freelancer: Address, _rating: i128) -> bool
-```
+```rust
+// 1. Initialize contract
+escrow.initialize(admin_address, arbitrator_address);
 
-Stub for on-chain reputation credential issuance. Always returns `true`.
+// 2. Create contract
+let contract_id = escrow.create_contract(
+    client_address,
+    freelancer_address,
+    vec![1000_0000000, 2000_0000000] // Milestones in stroops
+);
 
----
+// 3. Deposit funds
+escrow.deposit_funds(contract_id, 3000_0000000);
 
-### `hello`
-
-```
-hello(_env: Env, to: Symbol) -> Symbol
-```
-
-Echo function for smoke-testing. Returns the input symbol unchanged.
-
----
-
-## Authorization Schemes
-
-| Scheme             | `approve_milestone_release` caller | `release_milestone` condition     |
-|--------------------|------------------------------------|-----------------------------------|
-| `ClientOnly`       | Client                             | Client has approved               |
-| `ArbiterOnly`      | Arbiter                            | Arbiter has approved              |
-| `ClientAndArbiter` | Client or Arbiter                  | Client or Arbiter has approved    |
-| `MultiSig`         | Client or Arbiter                  | Client has approved (stub)        |
-
----
-
-## Contract Lifecycle
-
-```
-create_contract
-      │
-      ▼
-  [Created]
-      │  deposit_funds (client, full amount)
-      ▼
-  [Funded]
-      │  approve_milestone_release  ←──────────────┐
-      │  release_milestone                          │
-      │  (repeat for each milestone)  ──────────────┘
-      ▼
- [Completed]  ← all milestones released
+// 4. Release milestone
+escrow.release_milestone(contract_id, 0); // First milestone
 ```
 
----
+### Dispute Resolution
 
-## Failure Scenarios
+```rust
+// 5. Create dispute (when issues arise)
+let dispute_id = escrow.create_dispute(
+    contract_id,
+    symbol_short!("quality_issues"),
+    vec![symbol_short!("evidence1"), symbol_short!("evidence2")]
+);
 
-| Scenario                              | Method                       | Panic message                                              |
-|---------------------------------------|------------------------------|------------------------------------------------------------|
-| Empty milestone list                  | `create_contract`            | `"At least one milestone required"`                        |
-| Client == freelancer                  | `create_contract`            | `"Client and freelancer cannot be the same address"`       |
-| Non-positive milestone amount         | `create_contract`            | `"Milestone amounts must be positive"`                     |
-| Non-client attempts deposit           | `deposit_funds`              | `"Only client can deposit funds"`                          |
-| Deposit on already-funded contract    | `deposit_funds`              | `"Contract must be in Created status to deposit funds"`    |
-| Wrong deposit amount                  | `deposit_funds`              | `"Deposit amount must equal total milestone amounts"`      |
-| Unauthorised approver                 | `approve_milestone_release`  | `"Caller not authorized to approve milestone release"`     |
-| Duplicate approval                    | `approve_milestone_release`  | `"Milestone already approved by this address"`             |
-| Out-of-range milestone ID             | `approve_milestone_release`  | `"Invalid milestone ID"`                                   |
-| Release without approval              | `release_milestone`          | `"Insufficient approvals for milestone release"`           |
-| Double release                        | `release_milestone`          | `"Milestone already released"`                             |
+// 6. Resolve dispute (arbitrator only)
+escrow.resolve_dispute(
+    dispute_id,
+    DisputeResolution::PartialRefund,
+    0,  // Not used for PartialRefund
+    0   // Not used for PartialRefund
+);
+```
 
----
+## Testing
+
+The contract includes comprehensive tests covering:
+- Normal workflow operations
+- All dispute resolution scenarios
+- Access control violations
+- Edge cases and error conditions
+- Security validation
+
+Run tests with:
+```bash
+cargo test
+```
+
+## Future Enhancements
+
+- Reputation system integration
+- Multi-signature dispute resolution
+- Time-based escrow releases
+- Gas optimization for high-volume usage
+- Cross-chain dispute resolution
+This document describes escrow-specific controls and operational guidance.
+
+## Emergency Pause Controls
+
+The escrow contract includes admin-managed incident response controls:
+
+- `initialize(admin)`: Sets the admin address once.
+- `pause()`: Temporarily pauses state-changing functions.
+- `unpause()`: Re-enables operations after a normal pause.
+- `activate_emergency_pause()`: Activates emergency mode and hard-pauses operations.
+- `resolve_emergency()`: Clears emergency mode and unpauses the contract.
+- `is_paused()`: Read-only pause status.
+- `is_emergency()`: Read-only emergency status.
+
+### Guarded Functions
+
+While paused, these state-changing flows revert with `ContractPaused`:
+
+- `create_contract`
+- `deposit_funds`
+- `release_milestone`
+- `issue_reputation`
+
+### Error Codes
+
+- `1` `AlreadyInitialized`
+- `2` `NotInitialized`
+- `3` `ContractPaused`
+- `4` `NotPaused`
+- `5` `EmergencyActive`
 
 ## Security Notes
 
-- **Authentication:** Every state-mutating method calls `caller.require_auth()`,
-  ensuring the Stellar network validates the caller's signature.
-- **Single-record storage:** The current implementation stores one escrow record
-  under the key `"contract"`. A production deployment must key by `contract_id`
-  to support concurrent escrows.
-- **No token transfer:** Fund custody and transfer to the freelancer must be
-  implemented via the Stellar asset contract; this contract only tracks state.
-- **MultiSig stub:** The `MultiSig` variant currently behaves like `ClientOnly`
-  at release time. Full multi-signature enforcement is a planned enhancement.
+- Admin-only controls: pause and emergency operations require authenticated admin.
+- One-time initialization: admin cannot be replaced accidentally by repeated init calls.
+- Emergency lock discipline: `unpause` is blocked while emergency mode is active.
+- Fail-closed behavior: guarded functions revert whenever `paused == true`.
+
+## Operational Playbook
+
+1. Detect incident and call `activate_emergency_pause`.
+2. Investigate and remediate root cause.
+3. Validate mitigations in test/staging.
+4. Call `resolve_emergency` to restore service.
+5. Publish incident summary for ecosystem transparency.

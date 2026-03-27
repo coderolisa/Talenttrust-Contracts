@@ -30,70 +30,78 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
-/// The lifecycle state of an [`EscrowContract`].
+/// Persistent storage keys used by the Escrow contract.
 ///
-/// Transitions:
-/// - `Created`  → `Funded`    (via [`Escrow::deposit_funds`])
-/// - `Funded`   → `Completed` (automatically when all milestones are released)
-/// - `Funded`   → `Disputed`  (reserved for future dispute-resolution logic)
+/// Each variant corresponds to a distinct piece of contract state:
+/// - [`DataKey::Contract`] stores the full [`EscrowContract`] keyed by its numeric ID.
+/// - [`DataKey::ReputationIssued`] is a boolean flag that prevents double-issuance of
+///   reputation credentials for a given contract.
+/// - [`DataKey::NextId`] is a monotonically increasing counter for assigning contract IDs.
+#[contracttype]
+pub enum DataKey {
+    /// Full escrow contract state, keyed by the numeric contract ID.
+    Contract(u32),
+    /// Whether a reputation credential has already been issued for the given contract ID.
+    /// Immutably set to `true` on first issuance; prevents replay and double-issuance.
+    ReputationIssued(u32),
+    /// Auto-incrementing counter; incremented on every [`Escrow::create_contract`] call.
+    NextId,
+}
+
+/// The lifecycle status of an escrow contract.
+///
+/// Valid transitions:
+/// ```text
+/// Created -> Funded -> Completed
+/// Funded  -> Disputed
+/// ```
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContractStatus {
-    /// Contract has been created but not yet funded.
+    /// Contract created, awaiting client deposit.
     Created = 0,
-    /// Client has deposited the full escrow amount.
+    /// Funds deposited by client; work is in progress.
     Funded = 1,
-    /// All milestones have been released to the freelancer.
+    /// All milestones released and contract finalised by the client.
     Completed = 2,
-    /// A dispute has been raised; funds are frozen pending resolution.
+    /// A dispute has been raised; milestone payments are paused.
     Disputed = 3,
 }
 
-/// A single payment milestone within an [`EscrowContract`].
+/// Represents a payment milestone in the escrow contract.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Milestone {
-    /// Payment amount in stroops (1 XLM = 10 000 000 stroops).
+    /// Payment amount in stroops (1 XLM = 10_000_000 stroops).
     pub amount: i128,
-    /// Whether the milestone payment has been released to the freelancer.
+    /// Whether the client has released this milestone's funds to the freelancer.
     pub released: bool,
-    /// Address of the party that last approved this milestone, if any.
-    pub approved_by: Option<Address>,
-    /// Ledger timestamp at which the approval was recorded, if any.
-    pub approval_timestamp: Option<u64>,
 }
 
-/// Defines who is authorised to approve and release milestone payments.
-///
-/// | Variant            | Approve                  | Release condition          |
-/// |--------------------|--------------------------|----------------------------|
-/// | `ClientOnly`       | Client                   | Client approved            |
-/// | `ArbiterOnly`      | Arbiter                  | Arbiter approved           |
-/// | `ClientAndArbiter` | Client **or** Arbiter    | Either approved            |
-/// | `MultiSig`         | Client **or** Arbiter    | Client approved (see note) |
-///
-/// > **Note:** `MultiSig` is a placeholder for a full multi-signature flow.
-/// > In the current implementation it behaves like `ClientOnly` at release
-/// > time. A future version will require both client and arbiter approvals.
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum EscrowError {
+    InvalidContractId = 1,
+    InvalidMilestoneId = 2,
+    InvalidAmount = 3,
+    InvalidRating = 4,
+    EmptyMilestones = 5,
+    InvalidParticipant = 6,
+}
+
+/// Defines the security authorization scheme required to approve and release milestones.
+/// Carefully review the threat model associated with each scheme.
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReleaseAuthorization {
-    /// Only the client may approve and trigger releases.
-    ClientOnly = 0,
-    /// Either the client or the arbiter may approve; either may trigger release.
-    ClientAndArbiter = 1,
-    /// Only the arbiter may approve and trigger releases.
-    ArbiterOnly = 2,
-    /// Both client and arbiter must approve before release (partial implementation).
-    MultiSig = 3,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Milestone {
+    pub amount: i128,
+    pub released: bool,
+    pub approved_by_client: bool,
+    pub approved_by_arbiter: bool,
+    pub last_approval_timestamp: Option<u64>,
 }
 
 /// The on-chain record for a single escrow agreement.
@@ -155,6 +163,9 @@ pub enum Approval {
 #[contract]
 pub struct Escrow;
 
+/// Default approval/release deadline for each milestone after contract creation.
+const DEFAULT_MILESTONE_TIMEOUT_SECS: u64 = 7 * 24 * 60 * 60;
+
 #[contractimpl]
 impl Escrow {
     /// Create a new escrow contract with milestone-based release authorization.
@@ -197,7 +208,7 @@ impl Escrow {
         }
 
         if client == freelancer {
-            panic!("Client and freelancer cannot be the same address");
+            return Err(EscrowError::InvalidParticipants);
         }
 
         for i in 0..milestone_amounts.len() {
@@ -207,13 +218,23 @@ impl Escrow {
         }
 
         let mut milestones = Vec::new(&env);
-        for i in 0..milestone_amounts.len() {
+        let mut total_amount = 0_i128;
+        let mut i = 0_u32;
+        while i < milestone_count {
+            let amount = milestone_amounts
+                .get(i)
+                .ok_or(EscrowError::InvalidMilestoneAmount)?;
+            if amount <= 0 {
+                return Err(EscrowError::InvalidMilestoneAmount);
+            }
+            total_amount = total_amount
+                .checked_add(amount)
+                .ok_or(EscrowError::ArithmeticOverflow)?;
             milestones.push_back(Milestone {
-                amount: milestone_amounts.get(i).unwrap(),
+                amount,
                 released: false,
-                approved_by: None,
-                approval_timestamp: None,
             });
+            i += 1;
         }
 
         let contract_data = EscrowContract {
@@ -221,9 +242,13 @@ impl Escrow {
             freelancer: freelancer.clone(),
             arbiter,
             milestones,
+            milestone_count,
+            total_amount,
+            funded_amount: 0,
+            released_amount: 0,
+            released_milestones: 0,
             status: ContractStatus::Created,
-            release_auth,
-            created_at: env.ledger().timestamp(),
+            reputation_issued: false,
         };
 
         let contract_id = env.ledger().sequence();
@@ -284,17 +309,28 @@ impl Escrow {
             total_required += contract.milestones.get(i).unwrap().amount;
         }
 
-        if amount != total_required {
-            panic!("Deposit amount must equal total milestone amounts");
+        let updated_funded = record
+            .funded_amount
+            .checked_add(amount)
+            .ok_or(EscrowError::ArithmeticOverflow)?;
+
+        if updated_funded > record.total_amount {
+            return Err(EscrowError::FundingExceedsRequired);
         }
 
+        // Update contract status to Funded
         let mut updated_contract = contract;
-        updated_contract.status = ContractStatus::Funded;
+        updated_contract.transition_status(ContractStatus::Funded);
         env.storage()
             .persistent()
             .set(&symbol_short!("contract"), &updated_contract);
+        record.funded_amount = updated_funded;
+        if record.funded_amount > 0 {
+            record.status = ContractStatus::Funded;
+        }
 
-        true
+        save_contract(&env, contract_id, &record);
+        Ok(true)
     }
 
     /// Record an approval for a specific milestone from an authorised party.
@@ -329,11 +365,10 @@ impl Escrow {
     /// | `caller` has already approved this milestone       | `"Milestone already approved by this address"`                   |
     pub fn approve_milestone_release(
         env: Env,
-        _contract_id: u32,
-        caller: Address,
+        contract_id: u32,
         milestone_id: u32,
-    ) -> bool {
-        caller.require_auth();
+    ) -> Result<bool, EscrowError> {
+        ensure_storage_layout(&env)?;
 
         let mut contract: EscrowContract = env
             .storage()
@@ -349,7 +384,10 @@ impl Escrow {
             panic!("Invalid milestone ID");
         }
 
-        let milestone = contract.milestones.get(milestone_id).unwrap();
+        let available_balance = record
+            .funded_amount
+            .checked_sub(record.released_amount)
+            .ok_or(EscrowError::ArithmeticOverflow)?;
 
         if milestone.released {
             panic!("Milestone already released");
@@ -368,8 +406,8 @@ impl Escrow {
             }
         };
 
-        if !is_authorized {
-            panic!("Caller not authorized to approve milestone release");
+        if record.released_milestones == record.milestone_count {
+            record.status = ContractStatus::Completed;
         }
 
         if milestone
@@ -387,9 +425,26 @@ impl Escrow {
         contract.milestones.set(milestone_id, updated_milestone);
         env.storage()
             .persistent()
-            .set(&symbol_short!("contract"), &contract);
+            .get::<_, Reputation>(&rep_key)
+            .unwrap_or(Reputation {
+                total_rating: 0,
+                ratings_count: 0,
+            });
 
-        true
+        reputation.total_rating = reputation
+            .total_rating
+            .checked_add(rating)
+            .ok_or(EscrowError::ArithmeticOverflow)?;
+        reputation.ratings_count = reputation
+            .ratings_count
+            .checked_add(1)
+            .ok_or(EscrowError::ArithmeticOverflow)?;
+
+        env.storage().persistent().set(&rep_key, &reputation);
+
+        record.reputation_issued = true;
+        save_contract(&env, contract_id, &record);
+        Ok(true)
     }
 
     /// Release a milestone payment to the freelancer after sufficient approvals.
@@ -435,8 +490,12 @@ impl Escrow {
         let mut contract: EscrowContract = env
             .storage()
             .persistent()
-            .get(&symbol_short!("contract"))
-            .unwrap_or_else(|| panic!("Contract not found"));
+            .get::<_, Reputation>(&DataKey::V1(V1Key::Reputation(freelancer)))
+            .unwrap_or(Reputation {
+                total_rating: 0,
+                ratings_count: 0,
+            }))
+    }
 
         if contract.status != ContractStatus::Funded {
             panic!("Contract must be in Funded status to release milestones");
@@ -446,7 +505,9 @@ impl Escrow {
             panic!("Invalid milestone ID");
         }
 
-        let milestone = contract.milestones.get(milestone_id).unwrap();
+fn ensure_storage_layout(env: &Env) -> Result<(), EscrowError> {
+    let storage = env.storage().persistent();
+    let version_key = DataKey::Meta(MetaKey::LayoutVersion);
 
         if milestone.released {
             panic!("Milestone already released");
@@ -480,20 +541,70 @@ impl Escrow {
                 .map_or(false, |addr| addr == contract.client),
         };
 
-        if !has_sufficient_approval {
-            panic!("Insufficient approvals for milestone release");
-        }
+        // Should not panic
+        Escrow::check_funding_invariants(funding);
+    }
 
         let mut updated_milestone = milestone;
         updated_milestone.released = true;
 
         contract.milestones.set(milestone_id, updated_milestone);
 
+        // Check if all milestones are released
         let all_released = contract.milestones.iter().all(|m| m.released);
         if all_released {
-            contract.status = ContractStatus::Completed;
+            contract.transition_status(ContractStatus::Completed);
+        }
+    #[test]
+    #[should_panic(expected = "total_released > total_funded")]
+    fn test_funding_invariants_over_release() {
+        let funding = FundingAccount {
+            total_funded: 1000,
+            total_released: 1500,
+            total_available: -500,
+        };
+        Escrow::check_funding_invariants(funding);
+    }
+
+    #[test]
+    #[should_panic(expected = "total_released > total_funded")]
+    fn test_funding_invariants_negative_funded() {
+        let funding = FundingAccount {
+            total_funded: -100,
+            total_released: 0,
+            total_available: -100,
+        };
+
+        Escrow::check_funding_invariants(funding);
+    }
+
+    /// Mark a contract as disputed, guarded by allowed status transitions.
+    ///
+    /// # Errors
+    /// Panics if:
+    /// - Caller is not the client or arbiter
+    /// - Contract is not in Funded status
+    pub fn dispute_contract(env: Env, _contract_id: u32, caller: Address) -> bool {
+        caller.require_auth();
+
+        let mut contract: EscrowContract = env
+            .storage()
+            .persistent()
+            .get(&symbol_short!("contract"))
+            .unwrap_or_else(|| panic!("Contract not found"));
+
+        if contract.status != ContractStatus::Funded {
+            panic!("Contract must be in Funded status to dispute");
         }
 
+        let allowed_caller = caller == contract.client
+            || contract.arbiter.clone().map_or(false, |arb| arb == caller);
+
+        if !allowed_caller {
+            panic!("Only client or arbiter can dispute contract");
+        }
+
+        contract.transition_status(ContractStatus::Disputed);
         env.storage()
             .persistent()
             .set(&symbol_short!("contract"), &contract);
@@ -521,6 +632,15 @@ impl Escrow {
     pub fn issue_reputation(_env: Env, _freelancer: Address, _rating: i128) -> bool {
         true
     }
+  
+    #[test]
+    #[should_panic(expected = "total_available != total_funded - total_released")]
+    fn test_funding_invariants_negative_available() {
+        let funding = FundingAccount {
+            total_funded: 1000,
+            total_released: 400,
+            total_available: -100,
+        };
 
     /// Echo function used for smoke-testing and CI health checks.
     ///
@@ -539,5 +659,229 @@ impl Escrow {
     }
 }
 
-#[cfg(test)]
-mod test;
+    #[test]
+    #[should_panic(expected = "total_contract_value < total_funded")]
+    fn test_contract_invariants_over_funded() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let milestones = vec![
+            &env,
+            Milestone {
+                amount: 500,
+                released: false,
+            },
+            Milestone {
+                amount: 500,
+                released: false,
+            },
+        ];
+
+        let state = EscrowState {
+            client,
+            freelancer,
+            status: ContractStatus::Funded,
+            milestones,
+            funding: FundingAccount {
+                total_funded: 2000, // More than total contract value (1000)
+                total_released: 0,
+                total_available: 2000,
+            },
+        };
+
+        Escrow::check_contract_invariants(state);
+    }
+    Ok(())
+}
+
+    #[test]
+    fn test_contract_invariants_fully_released() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let milestones = vec![
+            &env,
+            Milestone {
+                amount: 500,
+                released: true,
+            },
+            Milestone {
+                amount: 500,
+                released: true,
+            },
+        ];
+
+        let state = EscrowState {
+            client,
+            freelancer,
+            status: ContractStatus::Completed,
+            milestones,
+            funding: FundingAccount {
+                total_funded: 1000,
+                total_released: 1000,
+                total_available: 0,
+            },
+        };
+
+        // Should not panic
+        Escrow::check_contract_invariants(state);
+    }
+}
+
+    // ============================================================================
+    // CONTRACT CREATION TESTS
+    // ============================================================================
+
+    #[test]
+    fn test_create_contract_valid() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env, 200_0000000_i128, 400_0000000_i128, 600_0000000_i128];
+
+        let id = Escrow::create_contract(env.clone(), client, freelancer, milestones);
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Must have at least one milestone")]
+    fn test_create_contract_no_milestones() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env];
+
+        Escrow::create_contract(env.clone(), client, freelancer, milestones);
+    }
+}
+
+    #[test]
+    #[should_panic(expected = "Milestone amounts must be positive")]
+    fn test_create_contract_zero_milestone() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env, 100_i128, 0_i128, 200_i128];
+
+        Escrow::create_contract(env.clone(), client, freelancer, milestones);
+    }
+
+    #[test]
+    #[should_panic(expected = "Milestone amounts must be positive")]
+    fn test_create_contract_negative_milestone() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env, 100_i128, -50_i128, 200_i128];
+
+        Escrow::create_contract(env.clone(), client, freelancer, milestones);
+    }
+
+    // ============================================================================
+    // DEPOSIT FUNDS TESTS
+    // ============================================================================
+
+    #[test]
+    fn test_deposit_funds_valid() {
+        let env = Env::default();
+        let result = Escrow::deposit_funds(env.clone(), 1, 1_000_0000000);
+        assert!(result);
+    }
+
+    #[test]
+    #[should_panic(expected = "Deposit amount must be positive")]
+    fn test_deposit_funds_zero_amount() {
+        let env = Env::default();
+        Escrow::deposit_funds(env.clone(), 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Deposit amount must be positive")]
+    fn test_deposit_funds_negative_amount() {
+        let env = Env::default();
+        Escrow::deposit_funds(env.clone(), 1, -1_000_0000000);
+    }
+
+    // ============================================================================
+    // EDGE CASE AND OVERFLOW TESTS
+    // ============================================================================
+
+    #[test]
+    fn test_large_milestone_amounts() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env, i128::MAX / 3, i128::MAX / 3, i128::MAX / 3];
+
+        let id = Escrow::create_contract(env.clone(), client, freelancer, milestones);
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn test_single_milestone_contract() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let milestones = vec![&env, 1000_i128];
+
+        let id = Escrow::create_contract(env.clone(), client, freelancer, milestones);
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn test_many_milestones_contract() {
+        let env = Env::default();
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let mut milestones = vec![&env];
+
+        for i in 1..=100 {
+            milestones.push_back(i as i128 * 100);
+        }
+
+        let id = Escrow::create_contract(env.clone(), client, freelancer, milestones);
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn test_funding_invariants_boundary_values() {
+        // Test with maximum safe values that satisfy the invariant
+        let total_funded = 1_000_000_000_000_000_000_i128;
+        let total_released = 500_000_000_000_000_000_i128;
+        let total_available = total_funded - total_released;
+
+        let funding = FundingAccount {
+            total_funded,
+            total_released,
+            total_available,
+        };
+
+        Escrow::check_funding_invariants(funding);
+    }
+
+    // ============================================================================
+    // ORIGINAL TESTS (PRESERVED)
+    // ============================================================================
+
+    #[test]
+    fn test_hello() {
+        let env = Env::default();
+        let contract_id = env.register(Escrow, ());
+        let client = EscrowClient::new(&env, &contract_id);
+
+        let result = client.hello(&symbol_short!("World"));
+        assert_eq!(result, symbol_short!("World"));
+    }
+
+    #[test]
+    fn test_release_milestone() {
+        let env = Env::default();
+        let contract_id = env.register(Escrow, ());
+        let client = EscrowClient::new(&env, &contract_id);
+
+        let result = client.release_milestone(&1, &0);
+        assert!(result);
+    }
+}
