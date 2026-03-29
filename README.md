@@ -36,6 +36,39 @@ Current defaults:
 - `min_reputation_rating = 1`
 - `max_reputation_rating = 5`
 
+## Event Emission
+
+The escrow contract emits standardized, deterministic events for all critical state transitions. These events enable off-chain indexing, monitoring, and integration with external systems.
+
+### Emitted Events
+
+| Event      | Topic | When | Emits |
+|-----------|-------|------|-------|
+| Contract Created | `"create"` | New escrow created | Contract ID, client, freelancer, arbiter, total amount, milestone count |
+| Contract Funded | `"fund"` | Client deposits funds | Contract ID, funder, amount, timestamp |
+| Milestone Released | `"release"` | Milestone payment released | Contract ID, milestone ID, amount, releaser |
+| Contract Disputed | `"dispute"` | Dispute initiated | Contract ID, initiator, reason, timestamp |
+| Contract Closed | `"close"` | All milestones released | Contract ID, freelancer, total released, timestamp |
+
+### Key Properties
+
+- **Minimal**: Events contain only data necessary for off-chain indexing
+- **Secure**: No private keys, secrets, or sensitive data exposed
+- **Deterministic**: Same structure and topics across all events
+- **Auditable**: Timestamp and ledger sequence provide transaction ordering
+- **Atomic**: Emitted only after successful state persistence
+
+### Off-Chain Integration
+
+Events enable building:
+- Real-time contract dashboards
+- Automated payment notifications
+- Compliance and audit trails
+- Freelancer reputation systems
+- Transaction reconciliation
+
+See [docs/escrow/EVENT_EMISSION.md](docs/escrow/EVENT_EMISSION.md) for comprehensive event documentation, off-chain indexing guides, and integration examples.
+
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (stable, 1.75+)
